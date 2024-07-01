@@ -1,3 +1,4 @@
+import math
 import torch
 import copy
 import inspect
@@ -56,6 +57,38 @@ def set_model_options_post_cfg_function(model_options, post_cfg_function, disabl
     if disable_cfg1_optimization:
         model_options["disable_cfg1_optimization"] = True
     return model_options
+
+def register_cfg_uncond_fetcher(extra_args: dict, output_cell: list, empty_weight: float=0.) -> dict:
+    """ Modifies a guider's extra_args with a post_cfg_function that fetches the uncond_denoised 
+    tensor from the args dict.
+    
+    Can also fetch empty_denoised if empty_weight != 0, which is used as a weight to lerp between the two.
+    
+    Note that empty_weight must be used with a guider that passes empty_cond_denoised to its post_cfg_functions,
+    such as PerpNegGuider."""
+    
+    def post_cfg_function(args):
+        # empty_cond_denoised is (as of June 2024) only set in post cfg by PerpNegGuider
+        # so to make using empty_weight more intuitive, we raise an exception
+        # with an explanation of how to fix it if it's not set but empty_weight != 0:
+
+        empty_denoised = args.get("empty_cond_denoised")
+        
+        if math.isclose(empty_weight, 0):
+            output_cell[0] = args["uncond_denoised"]
+        elif empty_denoised is None:
+            raise ValueError('empty_weight != 0 but empty_cond_denoised is not set; use PerpNegGuider to set it or set empty_weight to 0.')
+        elif math.isclose(empty_weight, 1):
+            output_cell[0] = empty_denoised
+        else:
+            uncond_denoised = args["uncond_denoised"]
+            output_cell[0] = uncond_denoised + empty_weight * (empty_denoised - uncond_denoised)
+
+        return args["denoised"]
+
+    model_options = extra_args.get("model_options", {}).copy()
+    extra_args["model_options"] = comfy.model_patcher.set_model_options_post_cfg_function(model_options, post_cfg_function, disable_cfg1_optimization=True)
+    return extra_args
 
 class ModelPatcher:
     def __init__(self, model, load_device, offload_device, size=0, current_device=None, weight_inplace_update=False):
